@@ -1,0 +1,50 @@
+project:
+  name: "kyc-flow"
+  version: "0.1.0"
+  log_level: "INFO"
+  seed: 42
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  reload: true
+
+paths:
+  models_dir: "models/"
+  logs_dir: "logs/"
+  # data_dir: "data/"
+
+models:
+  face_detection:
+    name: "yunet"
+    type: "opencv"
+    source: "url"        # or "pip"
+    url: "https://github.com/opencv/opencv_zoo/raw/master/models/face_detection_yunet/face_detection_yunet_2022mar.onnx"
+    local_file: "yunet.onnx"
+    pip_package: null
+
+  face_recognition:
+    name: "insightface"
+    type: "pip"
+    source: "pip"
+    pip_package: "insightface"
+    model_name: "buffalo_l"
+    local_file: null
+
+  ocr:
+    name: "easyocr"
+    type: "pip"
+    source: "pip"
+    pip_package: "easyocr"
+    languages: ["en"]
+    local_file: null
+
+storage:
+  cache_dir: ".cache/"
+  s3_bucket: "kyc-flow-models"   # if weights pushed into clouds later on 
+
+monitoring:
+  enabled: true
+  tool: "prometheus"   # or "none"
+  metrics_port: 9090

@@ -8,6 +8,8 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "pyaml (>=25.7.0,<26.0.0)",
+    "pydantic (>=2.11.9,<3.0.0)"
 ]
 
 
