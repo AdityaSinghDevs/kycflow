@@ -5,7 +5,7 @@ from typing import Optional
 def get_logger(name: str,
                log_level: str = 'INFO',
                console : bool = True,
-               log_file : Optional[str] = None)->logging.logger:
+               log_file : Optional[str] = None)->logging.Logger:
     
     logger = logging.getLogger(name)
 
@@ -31,7 +31,7 @@ def get_logger(name: str,
 
         file_handler = logging.FileHandler(log_file , mode='a', encoding='utf-8')
 
-        log_format = logging.Formatter("{asctime} - {levelname} - {name}:{funcname}:L{lineno}:{message}", style = '{')
+        log_format = logging.Formatter("{asctime} - {levelname} - {name}:{funcName}:L{lineno}:{message}", style = '{')
 
         file_handler.setFormatter(log_format)
         logger.addHandler(file_handler)

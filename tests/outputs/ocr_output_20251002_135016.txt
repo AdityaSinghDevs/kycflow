@@ -1,0 +1,37 @@
+============================================================
+EXTRACTED DOCUMENT DATA
+============================================================
+
+Document Type: VOTER_ID
+
+Extracted Fields:
+------------------------------------------------------------
+Dob                 : 25-06-2003
+Name                : Adtiya Pratap
+Father Name         : Gender: 94
+Gender              : Male
+Document Number     : YDI5828165
+Document Type       : voter_id
+
+Metadata:
+------------------------------------------------------------
+Text Regions        : 14
+Avg Confidence      : 81.60%
+
+Raw Extracted Text:
+------------------------------------------------------------
+ 1. ELECTION COMMISSION OF INDIA
+ 2. Elector Photo Identity Card
+ 3. YDI5828165
+ 4. 2
+ 5. T:
+ 6. 1
+ 7. Name: Adtiya Pratap
+ 8. Father's Name: Sanjeev Kumar Singh
+ 9. Gender: 94
+10. Male
+11. Date of Birth /
+12. 25-06-2003
+13. Sing
+14. Age:
+============================================================
