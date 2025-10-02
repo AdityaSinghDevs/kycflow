@@ -16,7 +16,7 @@ def test_ocr_extraction():
     Test the OCRExtractor with a sample ID image.
     """
     # Path to the sample image
-    image_path = "data/sample_id.jpg"
+    image_path = "data/sample_id2.jpg"
     
     # Check if the image exists
     if not os.path.exists(image_path):
