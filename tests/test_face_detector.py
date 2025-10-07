@@ -116,7 +116,7 @@ if __name__ == "__main__":
         image_path = sys.argv[1]
     else:
         # Default path - UPDATE THIS to your ID image location
-        image_path = "data/sample_id2.jpg"
+        image_path = "data/sample_id.jpg"
         print(f"\nUsage: python tests/test_yunet.py <path_to_id_image>")
         print(f"Using default: {image_path}\n")
     
