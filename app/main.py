@@ -1,3 +1,5 @@
+# app/main.py
+
 """
 KYC Processor - Main Orchestration Layer
 Coordinates face detection, face matching, and OCR extraction

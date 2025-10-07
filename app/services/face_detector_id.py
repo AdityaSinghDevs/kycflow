@@ -1,9 +1,14 @@
 # app/services/face_detector.py
 
+"""
+YuNet Face Detector - Optimized for KYC verification
+Handles face detection from ID documents and selfies
+"""
+
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple
 import logging
 
 from configs.config import config
@@ -11,27 +16,52 @@ from configs.config import config
 logger = logging.getLogger(__name__)
 
 
+class FaceDetectionResult:
+    """Encapsulates face detection result"""
+    
+    def __init__(
+        self,
+        bbox: np.ndarray,
+        confidence: float,
+        landmarks: np.ndarray,
+        face_crop: Optional[np.ndarray] = None
+    ):
+        self.bbox = bbox  # [x, y, w, h]
+        self.confidence = confidence
+        self.landmarks = landmarks  # 5 points: [right_eye, left_eye, nose, right_mouth, left_mouth]
+        self.face_crop = face_crop
+    
+    def to_dict(self) -> dict:
+        """Convert to serializable dict"""
+        return {
+            "bbox": self.bbox.tolist(),
+            "confidence": float(self.confidence),
+            "landmarks": self.landmarks.tolist(),
+            "has_crop": self.face_crop is not None
+        }
+
+
 class YuNetFaceDetector:
     """
-    YuNet face detector for extracting faces from ID documents and selfies.
-    Uses OpenCV's FaceDetectorYN with ONNX model.
+    YuNet face detector using OpenCV's FaceDetectorYN.
+    Optimized for:
+    - ID document face detection (single face, may be small/rotated)
+    - Selfie face detection (single face, centered, good quality)
     """
 
     def __init__(
         self,
         model_path: Optional[str] = None,
         conf_threshold: float = 0.6,
-        nms_threshold: float = 0.3,
-        top_k: int = 5000,
+        nms_threshold: float = 0.3
     ):
         """
-        Initialize YuNet face detector.
+        Initialize YuNet detector.
 
         Args:
-            model_path: Path to yunet.onnx model. If None, uses config.
-            conf_threshold: Confidence threshold for detection (0.0-1.0)
-            nms_threshold: NMS IoU threshold for filtering overlapping boxes
-            top_k: Keep top K detections before NMS
+            model_path: Path to yunet.onnx. If None, uses config.
+            conf_threshold: Confidence threshold (0.0-1.0). Lower = more lenient
+            nms_threshold: Non-maximum suppression threshold
         """
         if model_path is None:
             models_dir = Path(config.get("paths", "models_dir", default="models"))
@@ -39,113 +69,106 @@ class YuNetFaceDetector:
             model_path = str(models_dir / model_file)
 
         if not Path(model_path).exists():
-            raise FileNotFoundError(f"YuNet model not found at {model_path}")
+            raise FileNotFoundError(
+                f"YuNet model not found at {model_path}. "
+                f"Download from: {config.get('models', 'face_detection', 'url')}"
+            )
 
         self.model_path = model_path
         self.conf_threshold = conf_threshold
         self.nms_threshold = nms_threshold
-        self.top_k = top_k
         self.detector = None
+        self._last_size = (0, 0)
 
-        logger.info(f"Initialized YuNetFaceDetector with model: {model_path}")
+        logger.info(f"YuNet initialized: {model_path} (conf={conf_threshold})")
 
-    def _initialize_detector(self, img_width: int, img_height: int) -> None:
+    def _ensure_detector(self, width: int, height: int) -> None:
         """
-        Initialize or reinitialize detector with image dimensions.
-        YuNet requires input size at initialization.
+        Initialize or reinitialize detector if image size changed.
+        YuNet requires input size at model creation.
         """
-        self.detector = cv2.FaceDetectorYN.create(
-            model=self.model_path,
-            config="",
-            input_size=(img_width, img_height),
-            score_threshold=self.conf_threshold,
-            nms_threshold=self.nms_threshold,
-            top_k=self.top_k,
-        )
+        if self.detector is None or self._last_size != (width, height):
+            self.detector = cv2.FaceDetectorYN.create(
+                model=self.model_path,
+                config="",
+                input_size=(width, height),
+                score_threshold=self.conf_threshold,
+                nms_threshold=self.nms_threshold,
+                top_k=5000
+            )
+            self._last_size = (width, height)
+            logger.debug(f"Detector initialized for size: {width}x{height}")
 
     def detect(
         self,
         image: np.ndarray,
-        return_largest: bool = True,
-    ) -> Optional[Tuple[np.ndarray, float, np.ndarray]]:
+        return_largest: bool = True
+    ) -> Optional[FaceDetectionResult]:
         """
-        Detect faces in image.
+        Detect face(s) in image.
 
         Args:
-            image: Input image (BGR format, numpy array)
-            return_largest: If True, return only the largest face. If False, return all faces.
+            image: Input image (BGR format)
+            return_largest: If True, return only largest face. For KYC, should always be True.
 
         Returns:
-            If return_largest=True:
-                Tuple of (face_bbox, confidence, landmarks) or None if no face found
-                - face_bbox: [x, y, w, h]
-                - confidence: detection confidence score
-                - landmarks: 5 facial landmarks [right_eye, left_eye, nose, right_mouth, left_mouth]
-                  each landmark is (x, y)
-            If return_largest=False:
-                List of tuples, each containing (face_bbox, confidence, landmarks)
+            FaceDetectionResult or None if no face found
         """
         if image is None or image.size == 0:
-            logger.warning("Empty image provided to detector")
-            return None if return_largest else []
+            logger.warning("Empty image provided")
+            return None
 
         h, w = image.shape[:2]
-
-        # Initialize or reinitialize if size changed
-        if self.detector is None:
-            self._initialize_detector(w, h)
-        else:
-            # Check if we need to reinitialize due to size change
-            current_size = self.detector.getInputSize()
-            if current_size[0] != w or current_size[1] != h:
-                self._initialize_detector(w, h)
+        self._ensure_detector(w, h)
 
         # Detect faces
         _, faces = self.detector.detect(image)
 
         if faces is None or len(faces) == 0:
             logger.debug("No faces detected")
-            return None if return_largest else []
+            return None
 
-        logger.info(f"Detected {len(faces)} face(s)")
-
-        # Parse detections
-        results = []
+        # Parse detections - YuNet format: [x, y, w, h, 5 landmarks (x,y pairs), confidence]
+        detections = []
         for face in faces:
-            # YuNet output format: [x, y, w, h, x_re, y_re, x_le, y_le, x_n, y_n, x_rm, y_rm, x_lm, y_lm, conf]
-            bbox = face[:4].astype(np.int32)  # [x, y, w, h]
-            landmarks = face[4:14].reshape(5, 2).astype(np.int32)  # 5 landmarks
+            bbox = face[:4].astype(np.int32)
+            landmarks = face[4:14].reshape(5, 2).astype(np.int32)
             confidence = float(face[14])
-
-            results.append((bbox, confidence, landmarks))
+            
+            detections.append(FaceDetectionResult(
+                bbox=bbox,
+                confidence=confidence,
+                landmarks=landmarks
+            ))
 
         if return_largest:
-            # Return face with largest bounding box area
-            largest = max(results, key=lambda x: x[0][2] * x[0][3])  # w * h
+            # Return face with largest area
+            largest = max(detections, key=lambda x: x.bbox[2] * x.bbox[3])
+            logger.info(f"Face detected: confidence={largest.confidence:.3f}, bbox={largest.bbox.tolist()}")
             return largest
-        else:
-            # Sort by confidence descending
-            results.sort(key=lambda x: x[1], reverse=True)
-            return results
+        
+        # Sort by confidence (not used in KYC but available)
+        detections.sort(key=lambda x: x.confidence, reverse=True)
+        return detections[0] if detections else None
 
     def extract_face(
         self,
         image: np.ndarray,
         bbox: np.ndarray,
         padding: float = 0.2,
-        target_size: Optional[Tuple[int, int]] = None,
+        target_size: Tuple[int, int] = (112, 112)
     ) -> np.ndarray:
         """
-        Extract and crop face from image using bounding box.
+        Crop and resize face from image.
 
         Args:
-            image: Input image (BGR format)
+            image: Source image
             bbox: Bounding box [x, y, w, h]
-            padding: Padding ratio to add around bbox (0.2 = 20% padding)
-            target_size: Optional (width, height) to resize extracted face
+            padding: Padding ratio around face (0.2 = 20% extra space)
+            target_size: Output size (width, height). 112x112 is standard for InsightFace
 
         Returns:
-            Cropped face image
+            Cropped and resized face image
         """
         x, y, w, h = bbox
         img_h, img_w = image.shape[:2]
@@ -154,16 +177,17 @@ class YuNetFaceDetector:
         pad_w = int(w * padding)
         pad_h = int(h * padding)
 
+        # Ensure bounds
         x1 = max(0, x - pad_w)
         y1 = max(0, y - pad_h)
         x2 = min(img_w, x + w + pad_w)
         y2 = min(img_h, y + h + pad_h)
 
-        # Crop face
+        # Crop
         face_crop = image[y1:y2, x1:x2]
 
-        # Resize if target size specified
-        if target_size is not None:
+        # Resize to target size for embedding extraction
+        if target_size is not None and face_crop.size > 0:
             face_crop = cv2.resize(face_crop, target_size, interpolation=cv2.INTER_AREA)
 
         return face_crop
@@ -172,88 +196,52 @@ class YuNetFaceDetector:
         self,
         image: np.ndarray,
         padding: float = 0.2,
-        target_size: Optional[Tuple[int, int]] = (112, 112),
-    ) -> Optional[Tuple[np.ndarray, float, np.ndarray]]:
+        target_size: Tuple[int, int] = (112, 112)
+    ) -> Optional[FaceDetectionResult]:
         """
-        Convenience method: detect largest face and extract it.
-
-        Args:
-            image: Input image (BGR format)
-            padding: Padding around detected face
-            target_size: Resize extracted face to this size (for embeddings)
-
-        Returns:
-            Tuple of (face_image, confidence, landmarks) or None if no face found
-        """
-        detection = self.detect(image, return_largest=True)
-
-        if detection is None:
-            return None
-
-        bbox, confidence, landmarks = detection
-        face_img = self.extract_face(image, bbox, padding=padding, target_size=target_size)
-
-        return face_img, confidence, landmarks
-
-    def visualize_detection(
-        self,
-        image: np.ndarray,
-        bbox: np.ndarray,
-        confidence: float,
-        landmarks: Optional[np.ndarray] = None,
-        color: Tuple[int, int, int] = (0, 255, 0),
-        thickness: int = 2,
-    ) -> np.ndarray:
-        """
-        Draw bounding box and landmarks on image for visualization.
+        One-shot: detect largest face and extract crop.
 
         Args:
             image: Input image
-            bbox: [x, y, w, h]
-            confidence: Detection confidence
-            landmarks: Optional 5x2 array of facial landmarks
-            color: BGR color for drawing
-            thickness: Line thickness
+            padding: Padding around detected face
+            target_size: Resize extracted face to this size
 
         Returns:
-            Image with annotations
+            FaceDetectionResult with face_crop populated, or None
         """
-        img_vis = image.copy()
-        x, y, w, h = bbox
+        result = self.detect(image, return_largest=True)
+        
+        if result is None:
+            return None
 
-        # Draw bounding box
-        cv2.rectangle(img_vis, (x, y), (x + w, y + h), color, thickness)
-
-        # Draw confidence
-        label = f"{confidence:.2f}"
-        cv2.putText(
-            img_vis,
-            label,
-            (x, y - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            color,
-            thickness,
+        # Extract face crop
+        result.face_crop = self.extract_face(
+            image,
+            result.bbox,
+            padding=padding,
+            target_size=target_size
         )
 
-        # Draw landmarks
-        if landmarks is not None:
-            for lm in landmarks:
-                cv2.circle(img_vis, tuple(lm), 2, (0, 0, 255), -1)
-
-        return img_vis
+        return result
 
 
-# Singleton instance for reuse across requests
+# Singleton instance for FastAPI dependency injection
 _detector_instance: Optional[YuNetFaceDetector] = None
 
 
 def get_face_detector() -> YuNetFaceDetector:
     """
-    Get or create singleton YuNet detector instance.
-    Useful for FastAPI dependency injection.
+    Get or create singleton detector.
+    Thread-safe for use across FastAPI requests.
     """
     global _detector_instance
     if _detector_instance is None:
         _detector_instance = YuNetFaceDetector()
+        logger.info("Face detector singleton created")
     return _detector_instance
+
+
+def reset_detector() -> None:
+    """Reset singleton (useful for testing)"""
+    global _detector_instance
+    _detector_instance = None
