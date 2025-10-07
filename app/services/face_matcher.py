@@ -7,6 +7,7 @@ Compares ID document face with selfie face using deep learning embeddings
 
 import numpy as np
 from typing import Optional, Dict, Any
+import cv2
 import logging
 
 import insightface

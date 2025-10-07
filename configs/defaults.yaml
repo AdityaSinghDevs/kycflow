@@ -1,50 +1,79 @@
+# defaults.yaml
+# Default configuration for KYC verification service
+# Optimized for European/US ID cards
+
 project:
-  name: "kyc-flow"
-  version: "0.1.0"
+  name: "kyc-verification-service"
+  version: "1.0.0"
+  description: "KYC verification with face matching and OCR"
   log_level: "INFO"
-  seed: 42
 
 server:
   host: "0.0.0.0"
   port: 8000
   workers: 4
-  reload: true
+  reload: false  # Set true for development
 
 paths:
   models_dir: "models/"
   logs_dir: "logs/"
-  # data_dir: "data/"
+  temp_dir: "temp/"
 
 models:
+  # YuNet Face Detection
   face_detection:
     name: "yunet"
-    type: "opencv"
-    source: "url"
+    type: "onnx"
     url: "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
     local_file: "yunet.onnx"
-    pip_package: null
-
+    conf_threshold: 0.6
+    nms_threshold: 0.3
+  
+  # InsightFace Recognition
   face_recognition:
     name: "insightface"
-    type: "pip"
-    source: "pip"
-    pip_package: "insightface"
-    model_name: "buffalo_l"
-    local_file: null
-
+    model_name: "buffalo_l"  # buffalo_l (accurate) or buffalo_s (faster)
+    similarity_threshold: 0.4  # 0.3=lenient, 0.4=balanced, 0.5=strict
+  
+  # EasyOCR Text Extraction
   ocr:
     name: "easyocr"
-    type: "pip"
-    source: "pip"
-    pip_package: "easyocr"
-    languages: ["en"]
-    local_file: null
+    languages: ["en", "de", "es", "pt"]  # English, German, Spanish, Portuguese
+    confidence_threshold: 0.3
+    gpu: false  # Set true if GPU available
 
+# File upload settings
+upload:
+  max_size_mb: 10
+  allowed_extensions: ["jpg", "jpeg", "png", "pdf"]
+  image_max_dimension: 4096  # Max width/height in pixels
+
+# API settings
+api:
+  prefix: "/api/v1"
+  cors_enabled: true
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://localhost:5173"
+  rate_limit_enabled: false  # Enable in production
+  rate_limit_per_minute: 60
+
+# Storage settings
 storage:
-  cache_dir: ".cache/"
-  s3_bucket: "kyc-flow-models"   # if weights pushed into clouds later on 
+  type: "local"  # local or s3
+  local_temp_dir: "temp/"
+  s3_bucket: null  # Set via env variable
+  cleanup_temp_files: true
+  temp_file_ttl_hours: 24
 
+# Monitoring (optional)
 monitoring:
-  enabled: true
-  tool: "prometheus"   # or "none"
-  metrics_port: 9090
+  enabled: false
+  prometheus_port: 9090
+  health_check_path: "/health"
+
+# Processing settings
+processing:
+  async_enabled: true  # Use background tasks for heavy operations
+  max_concurrent_requests: 10
+  timeout_seconds: 30
