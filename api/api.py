@@ -9,7 +9,6 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
-import logging
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,13 +28,13 @@ from api.schemas import (
     FaceMatchData,
     SimilarityMetrics,
 )
-from app.services.face_detector import get_face_detector, YuNetFaceDetector
+from app.services.face_detector_id import get_face_detector, YuNetFaceDetector
 from app.services.face_matcher import get_face_matcher, InsightFaceMatcher
 from app.services.ocr_extractor import get_ocr_extractor, OCRExtractor
-from configs.config import config
+from utils.logger import get_logger
 
-# Setup logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, log_file="test_yunet.log")
+
 
 # Global service instances (loaded at startup)
 face_detector: Optional[YuNetFaceDetector] = None

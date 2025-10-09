@@ -8,14 +8,16 @@ Compares ID document face with selfie face using deep learning embeddings
 import numpy as np
 from typing import Optional, Dict, Any
 import cv2
-import logging
+
 
 import insightface
 from insightface.app import FaceAnalysis
 
 from configs.config import config
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, log_file="test_yunet.log")
+
 
 
 class FaceMatchResult:
@@ -64,40 +66,54 @@ class InsightFaceMatcher:
     """
 
     def __init__(
-        self,
-        model_name: Optional[str] = None,
-        use_gpu: bool = False,
-        similarity_threshold: float = 0.4
-    ):
-        """
-        Initialize InsightFace matcher.
+    self,
+    model_name: Optional[str] = None,
+    use_gpu: bool = False,
+    similarity_threshold: float = 0.4
+):
+    """
+                 Initialize InsightFace matcher.
+                
+                 Args:
+                 model_name: Model pack ('buffalo_l', 'buffalo_s'). If None, uses config.
+                 use_gpu: Use CUDA if available. Set to False for CPU-only.
+                     similarity_threshold: Cosine similarity threshold for verification.
+                         - 0.3: Very lenient (high false positives)
+                         - 0.4: Balanced (recommended)
+                         - 0.5: Strict (may reject valid matches)
+    """
+    if model_name is None:
+        model_name = config.get("models", "face_recognition", "model_name", default="buffalo_l")
 
-        Args:
-            model_name: Model pack ('buffalo_l', 'buffalo_s'). If None, uses config.
-            use_gpu: Use CUDA if available. Set to False for CPU-only.
-            similarity_threshold: Cosine similarity threshold for verification.
-                - 0.3: Very lenient (high false positives)
-                - 0.4: Balanced (recommended)
-                - 0.5: Strict (may reject valid matches)
-        """
-        if model_name is None:
-            model_name = config.get("models", "face_recognition", "model_name", default="buffalo_l")
+    self.model_name = model_name
+    self.similarity_threshold = similarity_threshold
 
-        self.model_name = model_name
-        self.similarity_threshold = similarity_threshold
-
-        # Initialize FaceAnalysis
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
+    # Initialize FaceAnalysis
+    providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if use_gpu else ['CPUExecutionProvider']
+    
+    try:
+        self.app = FaceAnalysis(name=model_name, providers=providers)
         
+        # Try to prepare with requested device
         try:
-            self.app = FaceAnalysis(name=model_name, providers=providers)
-            self.app.prepare(ctx_id=0 if use_gpu else -1, det_size=(640, 640))
-            
-            device = "GPU" if use_gpu else "CPU"
-            logger.info(f"InsightFace initialized: {model_name} on {device}, threshold={similarity_threshold}")
-        except Exception as e:
-            logger.error(f"Failed to initialize InsightFace: {e}")
-            raise
+            ctx_id = 0 if use_gpu else -1
+            self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+            logger.info(f"InsightFace prepared with ctx_id={ctx_id}")
+        except Exception as gpu_error:
+            # Fallback to CPU only if GPU was requested
+            if use_gpu:
+                logger.warning(f"GPU initialization failed, falling back to CPU: {gpu_error}")
+                self.app.prepare(ctx_id=-1, det_size=(640, 640))
+            else:
+                # CPU failed - this is fatal
+                raise
+        
+        device = "GPU" if use_gpu else "CPU"
+        logger.info(f"InsightFace initialized: {model_name} on {device}, threshold={similarity_threshold}")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize InsightFace: {e}")
+        raise
 
     def get_embedding(self, face_image: np.ndarray) -> Optional[np.ndarray]:
         """
@@ -242,18 +258,19 @@ class InsightFaceMatcher:
 
 
 # Singleton instance
-_matcher_instance: Optional[InsightFaceMatcher] = None
+import threading
 
+_matcher_instance: Optional[InsightFaceMatcher] = None
+_matcher_lock = threading.Lock()
 
 def get_face_matcher() -> InsightFaceMatcher:
-    """
-    Get or create singleton matcher.
-    Thread-safe for FastAPI.
-    """
+    """Thread-safe singleton getter."""
     global _matcher_instance
     if _matcher_instance is None:
-        _matcher_instance = InsightFaceMatcher()
-        logger.info("Face matcher singleton created")
+        with _matcher_lock:
+            if _matcher_instance is None:
+                _matcher_instance = InsightFaceMatcher()
+                logger.info("Face matcher singleton created")
     return _matcher_instance
 
 

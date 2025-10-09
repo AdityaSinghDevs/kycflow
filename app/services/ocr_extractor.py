@@ -13,11 +13,12 @@ import numpy as np
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
-import logging
 
 from configs.config import config
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, log_file="test_yunet.log")
+
 
 
 class DocumentType(str, Enum):
@@ -412,15 +413,19 @@ class OCRExtractor:
 
 
 # Singleton instance
-_ocr_instance: Optional[OCRExtractor] = None
+import threading
 
+_ocr_instance: Optional[OCRExtractor] = None
+_ocr_lock = threading.Lock()
 
 def get_ocr_extractor() -> OCRExtractor:
-    """Get or create singleton OCR extractor."""
+    """Thread-safe singleton getter."""
     global _ocr_instance
     if _ocr_instance is None:
-        _ocr_instance = OCRExtractor()
-        logger.info("OCR extractor singleton created")
+        with _ocr_lock:
+            if _ocr_instance is None:
+                _ocr_instance = OCRExtractor()
+                logger.info("OCR extractor singleton created")
     return _ocr_instance
 
 

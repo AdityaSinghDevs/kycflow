@@ -1,4 +1,4 @@
-# app/services/face_detector.py
+# app/services/face_detector_id.py
 
 """
 YuNet Face Detector - Optimized for KYC verification
@@ -9,11 +9,14 @@ import cv2
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
-import logging
 
 from configs.config import config
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, log_file="test_yunet.log")
+
+
+
 
 
 class FaceDetectionResult:
@@ -226,18 +229,19 @@ class YuNetFaceDetector:
 
 
 # Singleton instance for FastAPI dependency injection
-_detector_instance: Optional[YuNetFaceDetector] = None
+import threading
 
+_detector_instance: Optional[YuNetFaceDetector] = None
+_detector_lock = threading.Lock()
 
 def get_face_detector() -> YuNetFaceDetector:
-    """
-    Get or create singleton detector.
-    Thread-safe for use across FastAPI requests.
-    """
+    """Thread-safe singleton getter."""
     global _detector_instance
     if _detector_instance is None:
-        _detector_instance = YuNetFaceDetector()
-        logger.info("Face detector singleton created")
+        with _detector_lock:
+            if _detector_instance is None:
+                _detector_instance = YuNetFaceDetector()
+                logger.info("Face detector singleton created")
     return _detector_instance
 
 
