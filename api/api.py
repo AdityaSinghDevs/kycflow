@@ -2,7 +2,7 @@
 
 """
 FastAPI application for KYC verification service.
-Production-ready with async support, proper error handling, and Ballerine frontend integration.
+FIXED: Missing config import + response format for frontend
 """
 
 import asyncio
@@ -10,12 +10,14 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import cv2
 import numpy as np
 
+# ✅ FIX #1: Added missing import
+from configs.config import config
 from api.schemas import (
     KYCVerificationResponse,
     OCROnlyResponse,
@@ -33,34 +35,29 @@ from app.services.face_matcher import get_face_matcher, InsightFaceMatcher
 from app.services.ocr_extractor import get_ocr_extractor, OCRExtractor
 from utils.logger import get_logger
 
-logger = get_logger(__name__, log_file="test_yunet.log")
+logger = get_logger(__name__, log_file="api.log")
 
-
-# Global service instances (loaded at startup)
+# Global service instances
 face_detector: Optional[YuNetFaceDetector] = None
 face_matcher: Optional[InsightFaceMatcher] = None
 ocr_extractor: Optional[OCRExtractor] = None
 
-# Semaphore to limit concurrent processing (prevent memory overload)
+# Semaphore to limit concurrent processing
 MAX_CONCURRENT = config.get("processing", "max_concurrent_requests", default=10)
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 
 # ============================================================================
-# Lifespan Event Handler - Model Loading/Cleanup
+# Lifespan Event Handler
 # ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Startup/shutdown logic for loading models.
-    This ensures models are loaded once at startup, not per-request.
-    """
+    """Load models at startup, cleanup at shutdown."""
     global face_detector, face_matcher, ocr_extractor
     
     logger.info("🚀 Starting KYC Verification Service...")
     
-    # Load models at startup (in thread pool to not block)
     try:
         logger.info("Loading face detector...")
         face_detector = await asyncio.to_thread(get_face_detector)
@@ -79,14 +76,13 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Failed to load models: {e}")
         raise
     
-    yield  # Application runs here
+    yield
     
-    # Cleanup (if needed)
     logger.info("Shutting down service...")
 
 
 # ============================================================================
-# FastAPI App Initialization
+# FastAPI App
 # ============================================================================
 
 app = FastAPI(
@@ -144,11 +140,7 @@ async def general_exception_handler(request, exc):
 # ============================================================================
 
 async def read_upload_file(upload_file: UploadFile) -> np.ndarray:
-    """
-    Read UploadFile and convert to OpenCV image.
-    Validates file size and format.
-    """
-    # Check file size
+    """Read and validate uploaded image file."""
     max_size = config.max_upload_size
     content = await upload_file.read()
     
@@ -158,7 +150,6 @@ async def read_upload_file(upload_file: UploadFile) -> np.ndarray:
             detail=f"File too large. Max size: {max_size / (1024*1024):.1f}MB"
         )
     
-    # Decode image
     try:
         nparr = np.frombuffer(content, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -169,7 +160,6 @@ async def read_upload_file(upload_file: UploadFile) -> np.ndarray:
                 detail="Invalid image format. Supported: JPG, PNG"
             )
         
-        # Check dimensions
         max_dim = config.get("upload", "image_max_dimension", default=4096)
         h, w = image.shape[:2]
         if h > max_dim or w > max_dim:
@@ -191,18 +181,27 @@ async def read_upload_file(upload_file: UploadFile) -> np.ndarray:
 
 
 def determine_verification_status(face_verified: bool, ocr_confidence: float) -> VerificationStatus:
-    """
-    Determine overall verification status based on face match and OCR quality.
-    Simple logic for freelance project - can be made more complex later.
-    """
+    """Determine overall verification status."""
     if not face_verified:
         return VerificationStatus.REJECTED
     
-    # If face matches but OCR confidence is low, mark as pending for manual review
     if ocr_confidence < 0.5:
         return VerificationStatus.PENDING
     
     return VerificationStatus.APPROVED
+
+
+# ✅ FIX #2: Calculate overall confidence score
+def calculate_confidence_score(face_confidence: float, ocr_confidence: float, face_verified: bool) -> float:
+    """
+    Calculate overall confidence combining face match and OCR quality.
+    Frontend expects this field.
+    """
+    if not face_verified:
+        return 0.0
+    
+    # Weighted average: face match 60%, OCR 40%
+    return (face_confidence * 0.6) + (ocr_confidence * 0.4)
 
 
 # ============================================================================
@@ -211,7 +210,7 @@ def determine_verification_status(face_verified: bool, ocr_confidence: float) ->
 
 @app.get("/", tags=["Root"])
 async def root():
-    """Root endpoint - service info."""
+    """Root endpoint."""
     return {
         "service": config.get("project", "name"),
         "version": config.get("project", "version"),
@@ -222,10 +221,7 @@ async def root():
 
 @app.get("/api/v1/health", response_model=HealthCheckResponse, tags=["Health"])
 async def health_check():
-    """
-    Health check endpoint.
-    Returns service status and model loading state.
-    """
+    """Health check with model status."""
     models_status = {
         "face_detector": ModelStatus(
             loaded=face_detector is not None,
@@ -256,54 +252,37 @@ async def health_check():
 @app.post(
     "/api/v1/kyc/verify",
     response_model=KYCVerificationResponse,
-    responses={
-        400: {"model": ErrorResponse},
-        500: {"model": ErrorResponse}
-    },
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     tags=["KYC"]
 )
 async def verify_kyc(
     id_document: UploadFile = File(..., description="ID card/passport image"),
-    selfie_image: UploadFile = File(..., description="Selfie photo for face matching")
+    selfie_image: UploadFile = File(..., description="Selfie photo")
 ):
     """
-    Complete KYC verification workflow:
-    1. Detect faces in ID document and selfie
-    2. Match faces using InsightFace
-    3. Extract text from ID using OCR
-    4. Return verification result
-    
-    This is the main endpoint the Ballerine frontend will call.
+    Complete KYC verification: face detection + matching + OCR.
     """
     start_time = time.time()
     
-    # Validate models are loaded
     if not all([face_detector, face_matcher, ocr_extractor]):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Service not ready. Models still loading."
         )
     
-    # Rate limiting via semaphore
     async with processing_semaphore:
         try:
-            # Read and decode images
             logger.info("Reading uploaded files...")
             id_image = await read_upload_file(id_document)
             selfie_img = await read_upload_file(selfie_image)
             
-            # Step 1: Detect faces (run in thread pool)
+            # Detect faces
             logger.info("Detecting faces...")
-            id_face_result = await asyncio.to_thread(
-                face_detector.detect_and_extract,
-                id_image
-            )
-            selfie_face_result = await asyncio.to_thread(
-                face_detector.detect_and_extract,
-                selfie_img
+            id_face_result, selfie_face_result = await asyncio.gather(
+                asyncio.to_thread(face_detector.detect_and_extract, id_image),
+                asyncio.to_thread(face_detector.detect_and_extract, selfie_img)
             )
             
-            # Validate face detection
             if id_face_result is None:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -316,33 +295,39 @@ async def verify_kyc(
                     detail="No face detected in selfie image"
                 )
             
-            # Step 2: Face matching
-            logger.info("Matching faces...")
-            match_result = await asyncio.to_thread(
-                face_matcher.verify,
-                id_face_result.face_crop,
-                selfie_face_result.face_crop
+            # ✅ OPTIMIZATION: Run face matching and OCR in parallel
+            logger.info("Running face matching and OCR in parallel...")
+            match_result, ocr_result = await asyncio.gather(
+                asyncio.to_thread(
+                    face_matcher.verify,
+                    id_face_result.face_crop,
+                    selfie_face_result.face_crop
+                ),
+                asyncio.to_thread(
+                    ocr_extractor.extract_structured,
+                    id_image
+                )
             )
             
-            # Step 3: OCR extraction (parallel with face matching could be optimized)
-            logger.info("Extracting text from ID...")
-            ocr_result = await asyncio.to_thread(
-                ocr_extractor.extract_structured,
-                id_image
-            )
-            
-            # Step 4: Determine verification status
+            # Determine verification status
             verification_status = determine_verification_status(
                 face_verified=match_result.verified,
                 ocr_confidence=ocr_result.confidence
             )
             
-            # Calculate processing time
+            # ✅ FIX #2: Calculate overall confidence score for frontend
+            confidence_score = calculate_confidence_score(
+                face_confidence=match_result.confidence,
+                ocr_confidence=ocr_result.confidence,
+                face_verified=match_result.verified
+            )
+            
             processing_time_ms = int((time.time() - start_time) * 1000)
             
             # Build response
             response = KYCVerificationResponse(
                 verification_status=verification_status,
+                confidence_score=confidence_score,  # ✅ Added for frontend
                 face_match_score=match_result.confidence,
                 ocr_data=OCRData(
                     document_type=ocr_result.document_type,
@@ -382,20 +367,13 @@ async def verify_kyc(
 @app.post(
     "/api/v1/kyc/ocr",
     response_model=OCROnlyResponse,
-    responses={
-        400: {"model": ErrorResponse},
-        500: {"model": ErrorResponse}
-    },
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     tags=["KYC"]
 )
 async def extract_ocr(
     document_image: UploadFile = File(..., description="ID card/document image")
 ):
-    """
-    OCR-only endpoint.
-    Extracts text from document without face verification.
-    Useful for debugging or partial verification workflows.
-    """
+    """OCR-only endpoint."""
     start_time = time.time()
     
     if not ocr_extractor:
@@ -406,10 +384,8 @@ async def extract_ocr(
     
     async with processing_semaphore:
         try:
-            # Read image
             image = await read_upload_file(document_image)
             
-            # Extract OCR
             logger.info("Extracting OCR data...")
             ocr_result = await asyncio.to_thread(
                 ocr_extractor.extract_structured,
@@ -442,8 +418,3 @@ async def extract_ocr(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"OCR extraction failed: {str(e)}"
             )
-
-
-# ============================================================================
-# Run with: uvicorn api.api:app --host 0.0.0.0 --port 8000 --reload
-# ============================================================================
