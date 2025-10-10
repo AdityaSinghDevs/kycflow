@@ -1,11 +1,11 @@
 # api/schemas.py
 
 """
-Pydantic schemas for KYC API requests and responses.
-Matches Ballerine frontend expectations.
+Pydantic schemas for KYC API - FIXED for Ballerine frontend compatibility.
+Added confidence_score field as required by frontend.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -69,17 +69,26 @@ class FaceMatchData(BaseModel):
 
 class KYCVerificationResponse(BaseModel):
     """
-    Main KYC verification response.
-    This matches the frontend's expected structure.
+    Main KYC verification response - FIXED for Ballerine frontend.
+    Added confidence_score as top-level field (required by frontend).
     """
     verification_status: VerificationStatus = Field(
         description="Overall verification status"
     )
+    
+    # ✅ FIX: Added confidence_score for frontend compatibility
+    confidence_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Overall confidence (weighted: 60% face + 40% OCR)"
+    )
+    
     face_match_score: float = Field(
         ge=0.0,
         le=1.0,
         description="Face matching confidence (0-1)"
     )
+    
     ocr_data: OCRData = Field(description="OCR extraction results")
     processing_time_ms: int = Field(description="Total processing time in milliseconds")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
@@ -92,6 +101,7 @@ class KYCVerificationResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "verification_status": "approved",
+                "confidence_score": 0.89,
                 "face_match_score": 0.87,
                 "ocr_data": {
                     "document_type": "national_id",
@@ -104,14 +114,24 @@ class KYCVerificationResponse(BaseModel):
                         "nationality": "German"
                     }
                 },
-                "processing_time_ms": 1250,
-                "timestamp": "2024-01-15T10:30:00Z"
+                "processing_time_ms": 2500,
+                "timestamp": "2024-10-11T10:30:00Z",
+                "face_verification_details": {
+                    "verified": True,
+                    "confidence": 0.87,
+                    "similarity_metrics": {
+                        "cosine_similarity": 0.85,
+                        "euclidean_distance": 0.42
+                    },
+                    "threshold_used": 0.4,
+                    "message": "Faces match (85.0% similarity)"
+                }
             }
         }
 
 
 # ============================================================================
-# OCR-Only Response (for /ocr endpoint)
+# OCR-Only Response
 # ============================================================================
 
 class OCROnlyResponse(BaseModel):
@@ -132,8 +152,8 @@ class OCROnlyResponse(BaseModel):
                         "date_of_birth": "15/03/1985"
                     }
                 },
-                "processing_time_ms": 800,
-                "timestamp": "2024-01-15T10:30:00Z"
+                "processing_time_ms": 3200,
+                "timestamp": "2024-10-11T10:30:00Z"
             }
         }
 
@@ -155,7 +175,7 @@ class ErrorResponse(BaseModel):
                 "error": "ValidationError",
                 "message": "No face detected in ID document",
                 "details": {"confidence_threshold": 0.6},
-                "timestamp": "2024-01-15T10:30:00Z"
+                "timestamp": "2024-10-11T10:30:00Z"
             }
         }
 
@@ -184,10 +204,10 @@ class HealthCheckResponse(BaseModel):
                 "status": "healthy",
                 "version": "1.0.0",
                 "models": {
-                    "face_detector": {"loaded": True, "name": "yunet"},
-                    "face_matcher": {"loaded": True, "name": "insightface"},
-                    "ocr_extractor": {"loaded": True, "name": "easyocr"}
+                    "face_detector": {"loaded": True, "name": "yunet", "error": None},
+                    "face_matcher": {"loaded": True, "name": "insightface", "error": None},
+                    "ocr_extractor": {"loaded": True, "name": "easyocr", "error": None}
                 },
-                "timestamp": "2024-01-15T10:30:00Z"
+                "timestamp": "2024-10-11T10:30:00Z"
             }
         }
