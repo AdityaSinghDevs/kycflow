@@ -2,21 +2,20 @@
 
 """
 YuNet Face Detector - Optimized for KYC verification
-Handles face detection from ID documents and selfies
+FIXED: Separate log file, improved error messages
 """
 
 import cv2
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
+import threading
 
 from configs.config import config
 from utils.logger import get_logger
 
-logger = get_logger(__name__, log_file="test_yunet.log")
-
-
-
+# ✅ FIX: Use separate log file for face detection
+logger = get_logger(__name__, log_file="face_detector.log")
 
 
 class FaceDetectionResult:
@@ -72,10 +71,12 @@ class YuNetFaceDetector:
             model_path = str(models_dir / model_file)
 
         if not Path(model_path).exists():
-            raise FileNotFoundError(
+            error_msg = (
                 f"YuNet model not found at {model_path}. "
-                f"Download from: {config.get('models', 'face_detection', 'url')}"
+                f"Run: python scripts/download_models.py"
             )
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
 
         self.model_path = model_path
         self.conf_threshold = conf_threshold
@@ -83,7 +84,7 @@ class YuNetFaceDetector:
         self.detector = None
         self._last_size = (0, 0)
 
-        logger.info(f"YuNet initialized: {model_path} (conf={conf_threshold})")
+        logger.info(f"YuNet initialized: {Path(model_path).name} (conf={conf_threshold}, nms={nms_threshold})")
 
     def _ensure_detector(self, width: int, height: int) -> None:
         """
@@ -91,16 +92,20 @@ class YuNetFaceDetector:
         YuNet requires input size at model creation.
         """
         if self.detector is None or self._last_size != (width, height):
-            self.detector = cv2.FaceDetectorYN.create(
-                model=self.model_path,
-                config="",
-                input_size=(width, height),
-                score_threshold=self.conf_threshold,
-                nms_threshold=self.nms_threshold,
-                top_k=5000
-            )
-            self._last_size = (width, height)
-            logger.debug(f"Detector initialized for size: {width}x{height}")
+            try:
+                self.detector = cv2.FaceDetectorYN.create(
+                    model=self.model_path,
+                    config="",
+                    input_size=(width, height),
+                    score_threshold=self.conf_threshold,
+                    nms_threshold=self.nms_threshold,
+                    top_k=5000
+                )
+                self._last_size = (width, height)
+                logger.debug(f"Detector initialized for size: {width}x{height}")
+            except Exception as e:
+                logger.error(f"Failed to initialize detector: {e}")
+                raise
 
     def detect(
         self,
@@ -118,41 +123,46 @@ class YuNetFaceDetector:
             FaceDetectionResult or None if no face found
         """
         if image is None or image.size == 0:
-            logger.warning("Empty image provided")
+            logger.warning("Empty image provided to detect()")
             return None
 
         h, w = image.shape[:2]
         self._ensure_detector(w, h)
 
-        # Detect faces
-        _, faces = self.detector.detect(image)
+        try:
+            # Detect faces
+            _, faces = self.detector.detect(image)
 
-        if faces is None or len(faces) == 0:
-            logger.debug("No faces detected")
-            return None
+            if faces is None or len(faces) == 0:
+                logger.debug(f"No faces detected (threshold={self.conf_threshold})")
+                return None
 
-        # Parse detections - YuNet format: [x, y, w, h, 5 landmarks (x,y pairs), confidence]
-        detections = []
-        for face in faces:
-            bbox = face[:4].astype(np.int32)
-            landmarks = face[4:14].reshape(5, 2).astype(np.int32)
-            confidence = float(face[14])
+            # Parse detections - YuNet format: [x, y, w, h, 5 landmarks (x,y pairs), confidence]
+            detections = []
+            for face in faces:
+                bbox = face[:4].astype(np.int32)
+                landmarks = face[4:14].reshape(5, 2).astype(np.int32)
+                confidence = float(face[14])
+                
+                detections.append(FaceDetectionResult(
+                    bbox=bbox,
+                    confidence=confidence,
+                    landmarks=landmarks
+                ))
+
+            if return_largest:
+                # Return face with largest area
+                largest = max(detections, key=lambda x: x.bbox[2] * x.bbox[3])
+                logger.info(f"Face detected: conf={largest.confidence:.3f}, bbox={largest.bbox.tolist()}")
+                return largest
             
-            detections.append(FaceDetectionResult(
-                bbox=bbox,
-                confidence=confidence,
-                landmarks=landmarks
-            ))
-
-        if return_largest:
-            # Return face with largest area
-            largest = max(detections, key=lambda x: x.bbox[2] * x.bbox[3])
-            logger.info(f"Face detected: confidence={largest.confidence:.3f}, bbox={largest.bbox.tolist()}")
-            return largest
+            # Sort by confidence
+            detections.sort(key=lambda x: x.confidence, reverse=True)
+            return detections[0] if detections else None
         
-        # Sort by confidence (not used in KYC but available)
-        detections.sort(key=lambda x: x.confidence, reverse=True)
-        return detections[0] if detections else None
+        except Exception as e:
+            logger.error(f"Face detection failed: {e}")
+            return None
 
     def extract_face(
         self,
@@ -228,19 +238,27 @@ class YuNetFaceDetector:
         return result
 
 
-# Singleton instance for FastAPI dependency injection
-import threading
+# ============================================================================
+# Singleton Pattern - Thread-safe
+# ============================================================================
 
 _detector_instance: Optional[YuNetFaceDetector] = None
 _detector_lock = threading.Lock()
 
+
 def get_face_detector() -> YuNetFaceDetector:
-    """Thread-safe singleton getter."""
+    """
+    Thread-safe singleton getter.
+    Ensures only one detector instance per process.
+    """
     global _detector_instance
     if _detector_instance is None:
         with _detector_lock:
             if _detector_instance is None:
-                _detector_instance = YuNetFaceDetector()
+                _detector_instance = YuNetFaceDetector(
+                    conf_threshold=config.get("models", "face_detection", "conf_threshold", default=0.6),
+                    nms_threshold=config.get("models", "face_detection", "nms_threshold", default=0.3)
+                )
                 logger.info("Face detector singleton created")
     return _detector_instance
 
@@ -249,3 +267,4 @@ def reset_detector() -> None:
     """Reset singleton (useful for testing)"""
     global _detector_instance
     _detector_instance = None
+    logger.info("Face detector singleton reset")
